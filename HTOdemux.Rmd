@@ -1,0 +1,145 @@
+---
+title: "Hashatg annotations for the normal control part of  GSE126310"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(Seurat)
+library(CiteFuse)
+library(Seurat)
+library(SingleCellExperiment)
+
+```
+
+
+This report describes the hashtag demultiplexing of the GSE126310 CITEseq normal control PBMCs.   This report will use a workflow obtained by combining the Seurat and CITEfuse packages as follows: We will use CITEfuse for QC visulaistaions and doublet calls and some visualisations and use Seurat for demultiplexing and final group assignment. 
+
+
+Start by building the Seurat object and normalizing hashtag counts using a centered-log-ratio (CLR) normalisation
+
+```{r}
+
+df1 <- read.table("C:/data/10x datasets/To-process/GSE126310_CTCL-normal_ECCITEsseq/GSM3596095_ctrl-cDNA.txt", header=TRUE, sep=" ")
+df.ADT <- read.table("C:/data/10x datasets/To-process/GSE126310_CTCL-normal_ECCITEsseq/GSM3596096_ctrl-ADT-count.csv.gz", header=TRUE, sep=",")
+rownames(df.ADT)<-df.ADT[,1]
+df.HTO <- read.table("C:/data/10x datasets/To-process/GSE126310_CTCL-normal_ECCITEsseq/GSM3596097_ctrl-HTO-count.csv.gz", header=TRUE, sep=",")
+rownames(df.HTO)<- df.HTO[,1]
+rownames(df1)<- gsub("hg19_","", rownames(df1))
+CommonCells <- intersect(colnames(df1), intersect(colnames(df.ADT), colnames(df.HTO)))
+SeuratObj <- CreateSeuratObject(counts=df1[, which(colnames(df1) %in% CommonCells)], project = "GSE126310_control", assay = "RNA")
+SeuratObj[["ADT"]] <- CreateAssayObject(counts=df.ADT[1:49, which(colnames(df.ADT) %in% CommonCells)])
+SeuratObj[["HTO"]] <- CreateAssayObject(counts=df.HTO[1:4, which(colnames(df.HTO) %in% CommonCells)])
+
+SeuratObj <- NormalizeData(SeuratObj, assay = "HTO", normalization.method = "CLR")
+```
+
+
+We will first run the Seurat Demultiplexing methods. Seurat includes their own method called HTODemux. HTODemux algorithm works as follows:
+
+* Perform a k-medoid clustering on the normalized HTO values, which initially separates cells into K(# of samples)+1 clusters.
+* Calculate a ‘negative’ distribution for HTO. For each HTO, we use the cluster with the lowest average value as the negative group.
+* For each HTO,  fit a negative binomial distribution to the negative cluster. We use the 0.99 quantile of this distribution as a threshold. Based on these thresholds, each cell is classified as positive or negative for each HTO.
+* Cells that are positive for more than one HTOs are annotated as doublets.
+
+Seurat also includes a second method, called MultiseqDemux. Here we will only run this second one, as it seems  that there is low detection of one of the hastags, that interfers with HTODemux. Neverthe less, we do observe a group of doublet cells. 
+
+```{r}
+SeuratObj <- HTODemux(SeuratObj, assay = "HTO", positive.quantile = 0.99)
+SeuratObj <- MULTIseqDemux(SeuratObj)
+#SeuratObj <- SetIdent(SeuratObj, value = "orig.ident")
+RidgePlot(SeuratObj, features=rownames(SeuratObj[["HTO"]]@data))
+```
+
+
+
+We will convert this object into a sce Object to be able to visualize it using CITEFuse:
+
+```{r,echo=FALSE}
+sceObj <- as.SingleCellExperiment(SeuratObj)
+DefaultAssay(SeuratObj)<-"ADT" 
+ADT.sce <- as.SingleCellExperiment(SeuratObj)
+altExp(sceObj, "ADT")<-ADT.sce
+#altExpNames(sceObj)<-"ADT"
+DefaultAssay(SeuratObj)<-"HTO" 
+HTO.sce <- as.SingleCellExperiment(SeuratObj)
+altExp(sceObj,"HTO")<-HTO.sce
+#altExpNames(sceObj, e=2)<-"HTO"
+```
+
+We observe several groups of cells in the HTO space:
+
+```{r}
+sceObj <- scater::runUMAP(sceObj,altexp = "HTO",name = "UMAP_HTO")
+p1<-visualiseDim(sceObj,dimNames = "UMAP_HTO") + labs(title = "UMAP (HTO)")
+p1
+```
+
+# Doublet detection 
+
+CITEfuse detects doublets by Gaussian mixture models. The first step is to identify doublets as cells containing more than one hashtag. In their documentation they are called cross sample doublets. The results  are then saved in the colData as doubletClassify_within_label and doubletClassify_within_class. The can also define a second step, that they call within sample doublets. Within-sample doublets are identified using DBSCAN clustering of single cells based on two features—total number of captured unique molecular identifiers (UMIs) and total HTO expression. 
+
+```{r}
+sceObj <- crossSampleDoublets(sceObj)
+sceObj <- withinSampleDoublets(sceObj)
+#saveRDS(sceObj, "C:/data/10x datasets/To-process/GSE154826-Lung-CITEseq/CITEseq/Citeseq-lung-nonimmune-panel-with-doublet-calls-sce.rds")
+```
+
+We plot the distribution of the hashtag assignments projected on the UMAP representation and confirm the finding that there is a cluster of doublets:
+```{r}
+p2 <-visualiseDim(sceObj,dimNames = "UMAP_HTO",colour_by = "doubletClassify_between_label")
+p2
+```
+
+We visualize the normalized count for two of the hashtags, to confirm that there are doublets. 
+
+```{r}
+plotHTO(sceObj)
+```
+
+We compare this with the MULTISeqDemux, by plotting a summary of the Seurat classification and a scatter plot of HTO-1 vs HTO-2 normalized counts, for comparison: 
+
+
+```{r, fig.height=10, fig.width=16}
+MetaDataAll <- SeuratObj@meta.data
+df.HTOdemux.assignments <-data.frame(table(MetaDataAll$hash.ID))
+df.HTOmulti.assignments <-data.frame(table(MetaDataAll$MULTI_ID))
+SeuratObj <- SetIdent(SeuratObj, value = "hash.ID")
+p2 <- ggplot(df.HTOdemux.assignments, aes(x = Var1, y=Freq)) + geom_bar(position="dodge",stat = "identity")+theme_bw()+
+  theme(panel.border = element_blank(),axis.line = element_line(colour = "black"),text = element_text(size=20),
+        axis.text.x = element_text(size=16, angle=90),  axis.text.y = element_text(size=16), strip.text.y = element_text(size = 14, angle= 0)) +
+  xlab("Hashtag")+ylab("Counts -HashId")
+p3 <- FeatureScatter(SeuratObj, "HTO28-5P", "HTO29-5P")
+p4 <-ggplot(df.HTOdemux.assignments, aes(x = Var1, y=Freq)) + geom_bar(position="dodge",stat = "identity")+theme_bw()+
+  theme(panel.border = element_blank(),axis.line = element_line(colour = "black"),text = element_text(size=20),
+        axis.text.x = element_text(size=16, angle=90),  axis.text.y = element_text(size=16), strip.text.y = element_text(size = 14, angle= 0)) +
+  xlab("Hashtag")+ylab("Counts - MultiID")
+cowplot::plot_grid(p2,p3)
+cowplot::plot_grid(p2,p4)
+```
+
+# Remove all doublets
+
+We remove the doublets  found by Seurat and CITEFuse , and then visualize the  remaining cells to confirm that all types of doublets have been removed.CITEfuse has a two step doublet detection, first by removing cells positive for more than one hashtag, and then removing cells with too many HTO and UMI counts. A total of 445 cells have been removed as doublets.
+
+```{r}
+Doublet.List.index <- which(MetaDataAll$MULTI_ID != "Doublet" & sceObj@colData@listData[["doubletClassify_between_class"]] != "doublet/multiplet" &   sceObj@colData@listData[["doubletClassify_within_label"]] != "Doublets(Within)_1" &   sceObj@colData@listData[["doubletClassify_within_label"]] != "Doublets(Within)_2" &   sceObj@colData@listData[["doubletClassify_within_label"]] != "Doublets(Within)_3" &   sceObj@colData@listData[["doubletClassify_within_label"]] != "Doublets(Within)_4" & MetaDataAll$hash.ID != "Doublet"  & MetaDataAll$hash.ID != "Negative" & MetaDataAll$MULTI_ID != "Negative" )
+Singlet.cell.names <- rownames(MetaDataAll)[Doublet.List.index]
+sce.sub <- sceObj[, Singlet.cell.names]
+p5<-visualiseDim(sce.sub,dimNames = "UMAP_HTO",colour_by = "doubletClassify_between_label")
+p6<-visualiseDim(sce.sub,dimNames = "UMAP_HTO",colour_by = "doubletClassify_within_label")
+cowplot::plot_grid(p5,p6)
+```
+
+
+
+
+###Do the rest of the QC- MT RNA and gene number and save filtered object as seurat and sce for future use
+```{r}
+SeuratObj.sub <- subset(SeuratObj, cells = Singlet.cell.names)
+SeuratObj.sub[["percent.mt"]] <- PercentageFeatureSet(SeuratObj.sub, pattern = "^MT-")
+#SeuratObj <- AddMetaData(SeuratObj, MetaData)
+SeuratObj.sub <- subset(SeuratObj.sub, subset =   nFeature_RNA > 300 & percent.mt < 10) 
+saveRDS(SeuratObj.sub, "C:/data/10x datasets/Seurat objects/GSE126310_control_multimodal-Seurat.rds")
+```
