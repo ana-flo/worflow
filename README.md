@@ -1,2 +1,2 @@
-# worflow
+# workflows
 Standradized workflow files 
