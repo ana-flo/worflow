@@ -1,0 +1,44 @@
+---
+title: "InferCNV results "
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+ Sys.setenv(LANG = "en")
+library(tidyverse)
+library(pheatmap)
+library(cowplot)
+library(infercnv)
+```
+
+InferCNV is a computational method that allows the prediction of copy number alteration from single cell transcriptomics. 
+
+
+In order to pick out the tumor cells I use the hmm19 output.The data that is used to draw the heatmap is in "expr.infercnv.19_HMM_predHMMi6.rand_trees.hmm_mode-subclusters.Pnorm_0.5.repr_intensities". The values go from -1 to 3 with 1 being the unmodified one. 
+The following code pareses the file to create a table where for every cell the following information is stored: if there is any CNV event, only the high confidence ones: with max and minimum score, cluster and a final tumor call. Tumor call should be defined by both cluster and multiple high confidence CNV events. 
+ATTENTION: The thresholds actually depend on the iteration so they should be first checked in the corresponding plot. 
+
+```{r}
+df <- read.table("C:/data/inferCNV/AML-Mutaseq-res/expr.infercnv.19_HMM_predHMMi6.rand_trees.hmm_mode-subclusters.Pnorm_0.5.repr_intensities.dat", header=TRUE, sep="\t")
+annotation.table <- matrix(nrow=ncol(df), ncol=3 )
+colnames(annotation.table) <- c("CNA_count", "CNA-Status", "inferCNV_Cluster")
+
+for (i in 1:ncol(df)){
+   annotation.table[[i,1]]<-0
+  for (j in 1: nrow(df)){
+   
+    if (df[[j,i]] >= 1.5 || df[[j,i]] <= 0.5 )   annotation.table[[i,1]] <- annotation.table[[i,1]]+1
+    
+  }
+   
+   rownames(annotation.table) <- colnames(df)
+}
+
+for (i in 1:nrow(annotation.table)){ 
+  annotation.table[[i,2]]<- "normal"
+  if(annotation.table[[i,1]]>10) annotation.table[[i,2]]<- "tumor"
+}
+
+```
